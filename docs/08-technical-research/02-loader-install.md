@@ -156,8 +156,8 @@ Fabric/Quilt/≤1.12.2，而这块本来就无 Java。
 | 变化 | 事实 | 影响 |
 |---|---|---|
 | Java 21 / 25 | 1.20.5 起 `javaVersion.majorVersion=21`（实测 1.20.5/1.21.1/1.21.4/1.21.8；1.20.1 为 17）；26.1-snapshot-1 起 25（`jre_selector.rs:52-88`） | 装 1.20.5+ 必须 21；runtime 映射要可扩展 |
-| NeoForge 拆分 | 1.20.1 用 `net.neoforged:forge:1.20.1-47.x`；1.20.2+ 用 `net.neoforged:neoforge:20.2/21.1/21.4.x`（Maven 实测 200） | 坐标按 MC 版本分支 |
-| 版本号漂移 | `1.20.1-47.4.0`、`1.21.8-58.1.26`；新版出现 `66.0.13`（Prism meta，26.3） | **禁止解析版本号反推 MC 版本** |
+| NeoForge 拆分 | 1.20.1 用 `net.neoforged:forge:1.20.1-47.x`；1.20.2+ 用 `net.neoforged:neoforge:20.2/21.1/21.4.x`（Maven 实测 200） | 坐标由 `ForgelikeArtifacts` 单点决定，不在各调用方分支 |
+| 版本号漂移 | `1.20.1-47.4.0`、`1.21.8-58.1.26`；新版出现 `66.0.13`（Prism meta，26.3） | Forge 仍按 `<game>-` 前缀；NeoForge 的版本号编码了 MC 版本（`21.0.x`→1.21、`21.1.x`→1.21.1、`26.1.2.x`→26.1.2），只能解析不能按前缀猜（`"21."` 会把 1.21.1/1.21.3 串进 1.21） |
 | 主类变化 | 1.20.1 `cpw.mods.bootstraplauncher.BootstrapLauncher`；1.21.1 `net.minecraftforge.bootstrap.ForgeBootstrap`；NeoForge 仍 BootstrapLauncher | 主类只从 version.json 读 |
 | 新增 shim | 1.21.1 起 `install_profile.path` 指向 `:shim` | 当普通库下载 |
 | client 不再 jarsplitter | 1.21.1/1.21.8 只剩 3 个 client processor | 重写量变小，ATR 仍是硬骨头 |

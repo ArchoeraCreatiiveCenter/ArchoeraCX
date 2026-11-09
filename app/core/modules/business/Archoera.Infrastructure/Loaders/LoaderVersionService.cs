@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Xml.Linq;
 using Archoera.Application.Downloads;
 using Archoera.Application.Modules;
+using Archoera.Domain.Loaders;
 using Archoera.Infrastructure.Modules;
 using Archoera.Infrastructure.Settings;
 
@@ -17,19 +18,32 @@ public sealed record LoaderVersionInfo(
     bool Latest,
     bool Recommended);
 
+/// <summary>
+/// One <c>maven-metadata.xml</c> the NeoForge family publishes.
+/// </summary>
+/// <remarks>
+/// NeoForge ships two artifacts: <c>neoforge</c> for 1.20.2+ and the legacy
+/// <c>forge</c> id for 1.20.1. Their version strings self-describe the game
+/// version (<see cref="NeoForgeVersionText"/>), so a source is just a file to
+/// read. Adding another line later is a new list entry, not another endpoint
+/// parameter and another branch.
+/// </remarks>
+/// <param name="Metadata">Official <c>maven-metadata.xml</c>.</param>
+/// <param name="Mirror">Optional mirror of the same file.</param>
+public sealed record ForgelikeMetadataSource(
+    Uri Metadata,
+    Uri? Mirror = null);
+
 /// <summary>Provider endpoints, injectable for tests and mirrors.</summary>
 public sealed record LoaderVersionEndpoints(
     Uri Fabric,
     Uri Quilt,
     Uri ForgeMetadata,
     Uri ForgePromotions,
-    Uri NeoForgeMetadata,
+    IReadOnlyList<ForgelikeMetadataSource> NeoForgeSources,
     Uri? FabricMirror = null,
     Uri? ForgeMetaMirrorBase = null,
-    Uri? ForgePromotionsMirror = null,
-    Uri? NeoForgeMetadataMirror = null,
-    Uri? NeoForgeLegacyMetadata = null,
-    Uri? NeoForgeLegacyMetadataMirror = null)
+    Uri? ForgePromotionsMirror = null)
 {
     /// <summary>
     /// Official endpoints first, with BMCLAPI mirrors as fallbacks. The
@@ -41,19 +55,20 @@ public sealed record LoaderVersionEndpoints(
         new Uri("https://meta.quiltmc.org/v3/"),
         new Uri("https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml"),
         new Uri("https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"),
-        new Uri("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"),
+        [
+            new ForgelikeMetadataSource(
+                new Uri("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"),
+                new Uri("https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/maven-metadata.xml")),
+            // NeoForge 1.20.1 was published as net.neoforged:forge.
+            new ForgelikeMetadataSource(
+                new Uri("https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml"),
+                new Uri("https://bmclapi2.bangbang93.com/maven/net/neoforged/forge/maven-metadata.xml")),
+        ],
         FabricMirror: new Uri("https://bmclapi2.bangbang93.com/fabric-meta/v2/"),
         ForgeMetaMirrorBase: new Uri(
             "https://bmclapi2.bangbang93.com/forge/minecraft/"),
         ForgePromotionsMirror: new Uri(
-            "https://bmclapi2.bangbang93.com/maven/net/minecraftforge/forge/promotions_slim.json"),
-        NeoForgeMetadataMirror: new Uri(
-            "https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/maven-metadata.xml"),
-        // NeoForge 1.20.1 was published as net.neoforged:forge, not :neoforge.
-        NeoForgeLegacyMetadata: new Uri(
-            "https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml"),
-        NeoForgeLegacyMetadataMirror: new Uri(
-            "https://bmclapi2.bangbang93.com/maven/net/neoforged/forge/maven-metadata.xml"));
+            "https://bmclapi2.bangbang93.com/maven/net/minecraftforge/forge/promotions_slim.json"));
 }
 
 /// <summary>
@@ -427,17 +442,22 @@ public sealed class LoaderVersionService : IModuleMethodHandler
                 PrimaryTimeout)
             .ConfigureAwait(false);
         var document = XDocument.Parse(metadata);
-        var prefix = gameVersion + "-";
-        var versions = document
-            .Descendants()
-            .Where(element => element.Name.LocalName == "version")
-            .Select(element => element.Value.Trim())
-            .Where(value => value.StartsWith(prefix, StringComparison.Ordinal))
-            .Select(value => value[prefix.Length..])
-            .Where(value => value.Length > 0)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Select(value => (Version: value, Stable: !value.Contains('-')))
-            .ToList();
+        var wanted = gameVersion.Trim();
+        var versions = new List<(string Version, bool Stable)>();
+        foreach (var element in document.Descendants())
+        {
+            if (element.Name.LocalName != "version") continue;
+            if (!LoaderVersionText.TrySplitGamePrefixed(
+                    element.Value.Trim(),
+                    out var game,
+                    out var build))
+            {
+                continue;
+            }
+
+            if (!string.Equals(game, wanted, StringComparison.OrdinalIgnoreCase)) continue;
+            versions.Add((build, !build.Contains('-')));
+        }
 
         string? latest = null;
         string? recommended = null;
@@ -467,119 +487,105 @@ public sealed class LoaderVersionService : IModuleMethodHandler
         return BuildItems(versions, latest, recommended);
     }
 
+    /// <summary>
+    /// Lists NeoForge builds for a game version.
+    /// </summary>
+    /// <remarks>
+    /// The game version is decoded from each published loader version
+    /// (<see cref="NeoForgeVersionText"/>), not matched by string prefix:
+    /// 1.21 maps to <c>21.0.x</c> while 1.21.1 maps to <c>21.1.x</c>, so a
+    /// prefix would mix the lines. Every artifact the family publishes is
+    /// read; a source that is down only loses its own builds.
+    /// </remarks>
     private async Task<IReadOnlyList<LoaderVersionInfo>> NeoForgeAsync(
         string gameVersion,
         CancellationToken cancellationToken)
     {
-        var preferNeoForgeMirror =
-            _endpoints.NeoForgeMetadataMirror is not null &&
-            await PreferMirrorAsync(_preferNeoForgeMirror, cancellationToken)
-                .ConfigureAwait(false);
-        var (metadata, usedNeoForgeMirror) = preferNeoForgeMirror
-            ? await WithMirrorAsync(
-                    _endpoints.NeoForgeMetadataMirror!,
-                    _endpoints.NeoForgeMetadata,
-                    cancellationToken,
-                    GetStringAsync)
-                .ConfigureAwait(false)
-            : await WithMirrorAsync(
-                    _endpoints.NeoForgeMetadata,
-                    _endpoints.NeoForgeMetadataMirror,
-                    cancellationToken,
-                    GetStringAsync,
-                    PrimaryTimeout)
-                .ConfigureAwait(false);
-        if (usedNeoForgeMirror)
-        {
-            _preferNeoForgeMirror = !preferNeoForgeMirror;
-        }
-        var document = XDocument.Parse(metadata);
-        var prefix = NeoForgePrefix(gameVersion);
-        var versions = document
-            .Descendants()
-            .Where(element => element.Name.LocalName == "version")
-            .Select(element => element.Value.Trim())
-            .Where(value => value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Select(value => (Version: value, Stable: !value.Contains('-')))
-            .ToList();
+        var sources = _endpoints.NeoForgeSources;
+        if (sources is null || sources.Count == 0) return [];
 
-        if (string.Equals(gameVersion.Trim(), "1.20.1", StringComparison.Ordinal))
+        var preferMirror = await PreferMirrorAsync(_preferNeoForgeMirror, cancellationToken)
+            .ConfigureAwait(false);
+        var versions = new List<(string Version, bool Stable)>();
+        Exception? failure = null;
+        var usedMirror = false;
+
+        foreach (var source in sources)
         {
-            versions.AddRange(
-                await NeoForgeLegacyVersionsAsync(preferNeoForgeMirror, cancellationToken)
-                    .ConfigureAwait(false));
+            try
+            {
+                string metadata;
+                bool fromMirror;
+                if (preferMirror && source.Mirror is not null)
+                {
+                    (metadata, fromMirror) = await WithMirrorAsync(
+                            source.Mirror,
+                            source.Metadata,
+                            cancellationToken,
+                            GetStringAsync)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    (metadata, fromMirror) = await WithMirrorAsync(
+                            source.Metadata,
+                            source.Mirror,
+                            cancellationToken,
+                            GetStringAsync,
+                            PrimaryTimeout)
+                        .ConfigureAwait(false);
+                }
+
+                usedMirror |= fromMirror;
+                versions.AddRange(ParseNeoForgeVersions(metadata, gameVersion));
+            }
+            catch (Exception exception) when (
+                !cancellationToken.IsCancellationRequested &&
+                exception is HttpRequestException or IOException or TaskCanceledException
+                    or System.Xml.XmlException)
+            {
+                // A removed artifact (or a dead host) must not hide the other
+                // source's builds; only a total failure is reported.
+                failure ??= exception;
+            }
+        }
+
+        if (usedMirror)
+        {
+            _preferNeoForgeMirror = !preferMirror;
+        }
+
+        if (versions.Count == 0)
+        {
+            if (failure is not null) throw failure;
+            return [];
         }
 
         return BuildItems(versions);
     }
 
-    /// <summary>
-    /// NeoForge 1.20.1 builds live under the old <c>net.neoforged:forge</c>
-    /// artifact id, so the <c>:neoforge</c> metadata has no 1.20.1 entry at all.
-    /// Read the legacy list and strip the game prefix, matching the bare build
-    /// numbers used by the installer path and the version picker.
-    /// </summary>
-    private async Task<IReadOnlyList<(string Version, bool Stable)>> NeoForgeLegacyVersionsAsync(
-        bool preferMirror,
-        CancellationToken cancellationToken)
+    private static List<(string Version, bool Stable)> ParseNeoForgeVersions(
+        string metadata,
+        string gameVersion)
     {
-        var primary = _endpoints.NeoForgeLegacyMetadata;
-        if (primary is null) return [];
-
-        try
+        var wanted = gameVersion.Trim();
+        var versions = new List<(string Version, bool Stable)>();
+        foreach (var element in XDocument.Parse(metadata).Descendants())
         {
-            var mirror = _endpoints.NeoForgeLegacyMetadataMirror;
-            var (legacyMetadata, _) = preferMirror && mirror is not null
-                ? await WithMirrorAsync(
-                        mirror,
-                        primary,
-                        cancellationToken,
-                        GetStringAsync)
-                    .ConfigureAwait(false)
-                : await WithMirrorAsync(
-                        primary,
-                        mirror,
-                        cancellationToken,
-                        GetStringAsync,
-                        PrimaryTimeout)
-                    .ConfigureAwait(false);
+            if (element.Name.LocalName != "version") continue;
+            if (!NeoForgeVersionText.TryResolve(
+                    element.Value.Trim(),
+                    out var game,
+                    out var build))
+            {
+                continue;
+            }
 
-            const string legacyPrefix = "1.20.1-";
-            return XDocument
-                .Parse(legacyMetadata)
-                .Descendants()
-                .Where(element => element.Name.LocalName == "version")
-                .Select(element => element.Value.Trim())
-                .Where(value => value.StartsWith(legacyPrefix, StringComparison.OrdinalIgnoreCase))
-                .Select(value => value[legacyPrefix.Length..])
-                .Where(value => value.Length > 0)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Select(value => (Version: value, Stable: !value.Contains('-')))
-                .ToList();
-        }
-        catch (Exception exception) when (
-            !cancellationToken.IsCancellationRequested &&
-            exception is HttpRequestException or IOException or TaskCanceledException
-                or System.Xml.XmlException)
-        {
-            // The modern list is still useful if the legacy artifact is gone.
-            return [];
-        }
-    }
-
-    private static string NeoForgePrefix(string gameVersion)
-    {
-        var normalized = gameVersion.Trim();
-        if (normalized.StartsWith("1.", StringComparison.Ordinal))
-        {
-            normalized = normalized[2..];
+            if (!string.Equals(game, wanted, StringComparison.OrdinalIgnoreCase)) continue;
+            versions.Add((build, !build.Contains('-')));
         }
 
-        var parts = normalized.Split('.');
-        return parts.Length >= 2
-            ? $"{parts[0]}.{parts[1]}."
-            : normalized + ".";
+        return versions;
     }
 
     /// <summary>

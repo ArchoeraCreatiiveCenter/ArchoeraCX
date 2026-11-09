@@ -428,17 +428,15 @@ internal static class InstanceDiscovery
                         loader = "quilt";
                         loaderVersion = coordinate.Split(':').Last();
                     }
-                    else if (coordinate.StartsWith("net.neoforged:neoforge:", StringComparison.OrdinalIgnoreCase))
+                    else if (ForgelikeArtifacts.TryParseLibrary(coordinate, out var forgelike))
                     {
-                        loader = "neoforge";
-                        loaderVersion = coordinate.Split(':').Last();
-                    }
-                    else if (coordinate.StartsWith("net.neoforged:forge:", StringComparison.OrdinalIgnoreCase) ||
-                             coordinate.StartsWith("net.minecraftforge:forge:", StringComparison.OrdinalIgnoreCase))
-                    {
-                        loader = "forge";
-                        var value = coordinate.Split(':').Last();
-                        loaderVersion = value.Contains('-') ? value[(value.IndexOf('-') + 1)..] : value;
+                        // net.neoforged:forge is the 1.20.1 NeoForge line, not
+                        // Forge; the shared parser keeps this in one place.
+                        loader = forgelike.Kind == LoaderKind.Forge ? "forge" : "neoforge";
+                        loaderVersion = LoaderVersionText.Normalize(
+                            loader,
+                            gameVersion,
+                            forgelike.Version);
                     }
                 }
             }

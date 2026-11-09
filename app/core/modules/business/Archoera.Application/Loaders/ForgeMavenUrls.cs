@@ -27,7 +27,7 @@ public static class ForgeMavenUrls
     };
 
     /// <summary>
-    /// Repository-relative installer path:
+    /// Repository-relative installer path, for example
     /// <c>net/minecraftforge/forge/&lt;game&gt;-&lt;loader&gt;/forge-&lt;game&gt;-&lt;loader&gt;-installer.jar</c>
     /// or
     /// <c>net/neoforged/neoforge/&lt;loader&gt;/neoforge-&lt;loader&gt;-installer.jar</c>.
@@ -40,18 +40,9 @@ public static class ForgeMavenUrls
             LoaderVersionText.Normalize(kind.ToString(), game, loaderVersion),
             "loader version");
 
-        return kind switch
-        {
-            LoaderKind.Forge =>
-                $"net/minecraftforge/forge/{game}-{loader}/forge-{game}-{loader}-installer.jar",
-            LoaderKind.NeoForge when game == "1.20.1" =>
-                $"net/neoforged/forge/{NeoForgeLegacyVersion(game, loader)}/forge-{NeoForgeLegacyVersion(game, loader)}-installer.jar",
-            LoaderKind.NeoForge =>
-                $"net/neoforged/neoforge/{loader}/neoforge-{loader}-installer.jar",
-            _ => throw new ForgeDownloadException(
-                ForgeDownloadErrorCode.InvalidRequest,
-                $"unsupported loader kind '{kind}'"),
-        };
+        // Forge/NeoForge artifact identity (group, id, version) is owned by
+        // ForgelikeArtifacts; only the URL plumbing lives here.
+        return ForgelikeArtifacts.For(kind, game, loader).InstallerPath;
     }
 
     /// <summary>
@@ -111,11 +102,6 @@ public static class ForgeMavenUrls
 
         return $"downloads/loaders/{token}/{game}-{loader}-installer.jar";
     }
-
-    private static string NeoForgeLegacyVersion(string game, string loader)
-        => loader.StartsWith(game + "-", StringComparison.Ordinal)
-            ? loader
-            : $"{game}-{loader}";
 
     private static Uri NormalizeBase(Uri baseAddress)
     {

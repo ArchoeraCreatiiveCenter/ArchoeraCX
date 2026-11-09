@@ -194,9 +194,11 @@ internal static class LaunchPlanBuilder
             instance.GameVersion,
             ArgumentValue(version, "--fml.neoForgeVersion") ?? instance.LoaderVersion);
         var game = ArgumentValue(version, "--fml.mcVersion") ?? instance.GameVersion;
-        var relative = string.Equals(game, "1.20.1", StringComparison.Ordinal)
-            ? LegacyNeoForgeRelative(game, loader)
-            : $"net/neoforged/neoforge/{loader}/neoforge-{loader}";
+        // RelativeStem has no ".jar": the generated jars add
+        // "-universal.jar" / "-client.jar".
+        var relative = ForgelikeArtifacts
+            .For(LoaderKind.NeoForge, game, loader)
+            .RelativeStem;
         var basePath = Path.Combine(
             paths.LibrariesRoot,
             relative.Replace('/', Path.DirectorySeparatorChar));
@@ -213,18 +215,6 @@ internal static class LaunchPlanBuilder
         }
 
         return LaunchFileCheck.Valid;
-    }
-
-    /// <summary>
-    /// Legacy NeoForge (1.20.1) publishes under <c>net/neoforged/forge</c> with
-    /// the game version prefixed to the loader version.
-    /// </summary>
-    private static string LegacyNeoForgeRelative(string game, string loader)
-    {
-        var combined = loader.StartsWith(game + "-", StringComparison.Ordinal)
-            ? loader
-            : $"{game}-{loader}";
-        return $"net/neoforged/forge/{combined}/forge-{combined}";
     }
 
     /// <summary>Value of a <c>--name value</c> pair in the game arguments.</summary>

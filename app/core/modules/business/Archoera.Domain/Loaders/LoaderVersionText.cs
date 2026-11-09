@@ -38,6 +38,14 @@ public static class LoaderVersionText
             text = StripGamePrefix(text, game);
             text = StripMarkers(text, markers);
             text = StripGamePrefix(text, game);
+
+            // The caller may not know the game version (imported profiles
+            // without inheritsFrom); the leading "1.x-" is still the prefix.
+            if (TrySplitGamePrefixed(text, out _, out var build))
+            {
+                text = build;
+            }
+
             return text.Trim();
         }
 
@@ -57,6 +65,52 @@ public static class LoaderVersionText
         }
 
         return text;
+    }
+
+    /// <summary>
+    /// Splits Forge's game-prefixed version spelling
+    /// (<c>1.20.1-47.2.0</c>, <c>1.20.1-forge-47.1.7</c>) into game and build.
+    /// </summary>
+    /// <remarks>
+    /// Only the 1.x game line was ever published this way; NeoForge's modern
+    /// versions are bare and may contain <c>-beta</c>, so the leading <c>1.</c>
+    /// is what separates the two forms.
+    /// </remarks>
+    public static bool TrySplitGamePrefixed(
+        string? version,
+        out string gameVersion,
+        out string loaderVersion)
+    {
+        gameVersion = string.Empty;
+        loaderVersion = string.Empty;
+
+        var text = version?.Trim() ?? string.Empty;
+        if (!text.StartsWith("1.", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var dash = text.IndexOf('-');
+        if (dash <= 0)
+        {
+            return false;
+        }
+
+        var build = text[(dash + 1)..];
+        const string marker = "forge-";
+        if (build.StartsWith(marker, StringComparison.OrdinalIgnoreCase) && build.Length > marker.Length)
+        {
+            build = build[marker.Length..];
+        }
+
+        if (build.Length == 0)
+        {
+            return false;
+        }
+
+        gameVersion = text[..dash];
+        loaderVersion = build;
+        return true;
     }
 
     private static string StripMarkers(string text, IReadOnlyList<string> markers)

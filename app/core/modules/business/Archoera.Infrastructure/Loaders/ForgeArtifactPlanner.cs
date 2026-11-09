@@ -395,21 +395,14 @@ internal sealed partial class PlanBuilder
             return;
         }
 
-        var group = _kind == LoaderKind.Forge ? "net.minecraftforge" : "net.neoforged";
-        var artifact = _kind == LoaderKind.Forge
-            ? "forge"
-            : _gameVersion == "1.20.1" ? "forge" : "neoforge";
-        var coordinateVersion = _kind == LoaderKind.Forge
-            ? $"{_gameVersion}-{_loaderVersion}"
-            : _gameVersion == "1.20.1" &&
-              !_loaderVersion.StartsWith(_gameVersion + "-", StringComparison.Ordinal)
-                ? $"{_gameVersion}-{_loaderVersion}"
-                : _loaderVersion;
-
+        // The profile may omit PATCHED (Forge 1.20.1 and NeoForge 21.1 are the
+        // important cases). ForgelikeArtifacts owns the artifact id and the
+        // game-prefix rule, so the fallback cannot drift from the other paths.
+        var loaderArtifact = ForgelikeArtifacts.For(_kind, _gameVersion, _loaderVersion);
         var fallback = new MavenCoordinate(
-            group,
-            artifact,
-            coordinateVersion,
+            loaderArtifact.GroupId,
+            loaderArtifact.ArtifactId,
+            loaderArtifact.Version,
             "clientdata",
             "lzma");
         _binpatchRelative = fallback.RelativePath;

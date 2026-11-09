@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using Archoera.Domain.Loaders;
 using Archoera.Infrastructure.Loaders;
 using Archoera.Infrastructure.Modules;
 
@@ -55,7 +56,7 @@ public sealed class LoaderVersionServiceTests
     }
 
     [Fact]
-    public async Task NeoForge_versions_use_the_minor_patch_prefix()
+    public async Task NeoForge_versions_are_filtered_by_the_decoded_game_version()
     {
         var handler = new FakeHttpMessageHandler();
         handler.Enqueue(() => TextResponse("""
@@ -66,6 +67,8 @@ public sealed class LoaderVersionServiceTests
               <version>20.1.80</version>
             </versions></versioning></metadata>
             """));
+        // The legacy artifact is read too; it has no 1.21.1 builds.
+        handler.Enqueue(() => TextResponse("<metadata/>"));
         var service = CreateService(handler);
 
         var versions = await service.ListAsync("neoforge", "1.21.1");
@@ -74,6 +77,59 @@ public sealed class LoaderVersionServiceTests
         Assert.True(versions[0].Latest);
         Assert.True(versions[0].Recommended);
         Assert.False(versions[2].Stable);
+    }
+
+    [Fact]
+    public async Task NeoForge_1_21_does_not_list_later_lines()
+    {
+        var handler = new FakeHttpMessageHandler();
+        handler.Enqueue(() => TextResponse("""
+            <metadata><versioning><versions>
+              <version>21.0.167</version>
+              <version>21.1.265</version>
+              <version>21.3.100</version>
+              <version>20.2.93</version>
+            </versions></versioning></metadata>
+            """));
+        handler.Enqueue(() => TextResponse("<metadata/>"));
+        var service = CreateService(handler);
+
+        var versions = await service.ListAsync("neoforge", "1.21");
+
+        // 1.21 is the 21.0 line; 21.1/21.3 belong to later game versions.
+        Assert.Equal(["21.0.167"], versions.Select(item => item.Version));
+    }
+
+    [Fact]
+    public async Task NeoForge_26_line_decodes_four_segment_versions()
+    {
+        var handler = new FakeHttpMessageHandler();
+        handler.Enqueue(() => TextResponse("""
+            <metadata><versioning><versions>
+              <version>26.1.2.126</version>
+              <version>26.1.0.5</version>
+              <version>26.1.0.0-alpha.1+snapshot-1</version>
+              <version>26.3.0.99</version>
+            </versions></versioning></metadata>
+            """));
+        handler.Enqueue(() => TextResponse("<metadata/>"));
+        // The second ListAsync call has its own cache key, so it refetches.
+        handler.Enqueue(() => TextResponse("""
+            <metadata><versioning><versions>
+              <version>26.1.2.126</version>
+              <version>26.1.0.5</version>
+              <version>26.1.0.0-alpha.1+snapshot-1</version>
+              <version>26.3.0.99</version>
+            </versions></versioning></metadata>
+            """));
+        handler.Enqueue(() => TextResponse("<metadata/>"));
+        var service = CreateService(handler);
+
+        var patch = await service.ListAsync("neoforge", "26.1.2");
+        var release = await service.ListAsync("neoforge", "26.1");
+
+        Assert.Equal(["26.1.2.126"], patch.Select(item => item.Version));
+        Assert.Equal(["26.1.0.5"], release.Select(item => item.Version));
     }
 
     [Fact]
@@ -240,11 +296,16 @@ public sealed class LoaderVersionServiceTests
                 new Uri("https://test.local/v3/"),
                 new Uri("https://test.local/forge/maven-metadata.xml"),
                 new Uri("https://test.local/forge/promotions.json"),
-                new Uri("https://test.local/neoforge/maven-metadata.xml"),
+                [
+                    new ForgelikeMetadataSource(
+                        new Uri("https://test.local/neoforge/maven-metadata.xml"),
+                        neoForgeMirror),
+                    new ForgelikeMetadataSource(
+                        neoForgeLegacy ??
+                            new Uri("https://test.local/neoforge-legacy/maven-metadata.xml")),
+                ],
                 FabricMirror: fabricMirror,
-                ForgeMetaMirrorBase: forgeMetaMirror,
-                NeoForgeMetadataMirror: neoForgeMirror,
-                NeoForgeLegacyMetadata: neoForgeLegacy),
+                ForgeMetaMirrorBase: forgeMetaMirror),
             regionPolicy: regionOverride is null
                 ? null
                 : new RegionPolicy(regionOverride: regionOverride));
